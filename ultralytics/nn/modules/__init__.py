@@ -89,6 +89,7 @@ from .head import (
     YOLOESegment,
     v10Detect,
 )
+from .river_neck import FeatureSelect, MSFFM_YOLO, SGFPN3, SemanticGuideFusion
 from .transformer import (
     AIFI,
     MLP,
@@ -179,4 +180,8 @@ __all__ = (
     "TorchVision",
     "Index",
     "A2C2f",
+    "SGFPN3",
+    "FeatureSelect",
+    "MSFFM_YOLO",
+    "SemanticGuideFusion",
 )

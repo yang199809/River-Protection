@@ -47,6 +47,7 @@ from ultralytics.nn.modules import (
     DWConv,
     DWConvTranspose2d,
     Focus,
+    FeatureSelect,
     GhostBottleneck,
     GhostConv,
     HGBlock,
@@ -62,6 +63,7 @@ from ultralytics.nn.modules import (
     ResNetLayer,
     RTDETRDecoder,
     SCDown,
+    SGFPN3,
     Segment,
     TorchVision,
     WorldDetect,
@@ -1714,6 +1716,17 @@ def parse_model(d, ch, verbose=True):
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
+        elif m is SGFPN3:
+            if not isinstance(f, list):
+                raise TypeError("SGFPN3 expects a list of input layers, e.g. [16, 19, 22].")
+            c1 = [ch[x] for x in f]
+            c2 = make_divisible(min(args[0], max_channels) * width, 8)
+            args = [c1, c2, *args[1:]]
+            c2 = [c2] * len(c1)
+        elif m is FeatureSelect:
+            index = args[0] if args else 0
+            c1 = ch[f]
+            c2 = c1[index] if isinstance(c1, (list, tuple)) else c1
         elif m in frozenset(
             {Detect, WorldDetect, YOLOEDetect, Segment, YOLOESegment, Pose, OBB, ImagePoolingAttn, v10Detect}
         ):
