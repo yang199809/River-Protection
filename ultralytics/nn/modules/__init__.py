@@ -89,7 +89,15 @@ from .head import (
     YOLOESegment,
     v10Detect,
 )
-from .river_neck import FeatureSelect, MSFFM_YOLO, SGFPN3, SemanticGuideFusion
+from .river_neck import (
+    ChannelContextAggregationYOLO,
+    FeatureSelect,
+    MSFFM_YOLO,
+    RSE3,
+    RiverDCPBlock,
+    SGFPN3,
+    SemanticGuideFusion,
+)
 from .transformer import (
     AIFI,
     MLP,
@@ -184,4 +192,7 @@ __all__ = (
     "FeatureSelect",
     "MSFFM_YOLO",
     "SemanticGuideFusion",
+    "ChannelContextAggregationYOLO",
+    "RiverDCPBlock",
+    "RSE3",
 )

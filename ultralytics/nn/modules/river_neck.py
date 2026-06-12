@@ -8,7 +8,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-__all__ = ("GRN", "MSFFM_YOLO", "SemanticGuideFusion", "SGFPN3", "FeatureSelect")
+__all__ = (
+    "GRN",
+    "MSFFM_YOLO",
+    "SemanticGuideFusion",
+    "SGFPN3",
+    "FeatureSelect",
+    "ChannelContextAggregationYOLO",
+    "RiverDCPBlock",
+    "RSE3",
+)
 
 
 def _autopad(k: Union[int, Sequence[int]]) -> Union[int, tuple]:
@@ -151,6 +160,102 @@ class SGFPN3(nn.Module):
         p4 = self.msffm[1](p4 + self._resize_like(self.down_p3(p3), p4))
         p5 = self.msffm[2](p5 + self._resize_like(self.down_p4(p4), p5))
         return [p3, p4, p5]
+
+
+class ChannelContextAggregationYOLO(nn.Module):
+    """Channel context aggregation using pure PyTorch ops for YOLO feature maps."""
+
+    def __init__(self, channels: int, reduction: int = 1, eps: float = 1e-6):
+        super().__init__()
+        self.channels = channels
+        self.inter_channels = max(channels // reduction, 1)
+        self.eps = eps
+        self.key = nn.Conv2d(channels, 1, 1)
+        self.value = nn.Conv2d(channels, self.inter_channels, 1)
+        self.proj = nn.Conv2d(self.inter_channels, channels, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Aggregate global context and return a context map with the same shape as x."""
+        b, _, h, w = x.shape
+        k = self.key(x).view(b, 1, -1, 1).softmax(dim=2)
+        v = self.value(x).view(b, 1, self.inter_channels, -1)
+        context = torch.matmul(v, k).view(b, self.inter_channels, 1, 1)
+        return self.proj(context).expand(-1, -1, h, w)
+
+
+class RiverDCPBlock(nn.Module):
+    """Directional context perception block for long river-structure features."""
+
+    def __init__(self, channels: int, large_size: int = 5, strip_size: int = 9):
+        super().__init__()
+        if large_size % 2 == 0 or strip_size % 2 == 0:
+            raise ValueError("large_size and strip_size must be odd for same-size depthwise convolution.")
+
+        self.channel_context = ChannelContextAggregationYOLO(channels)
+        self.large_dw = nn.Conv2d(channels, channels, large_size, padding=large_size // 2, groups=channels, bias=False)
+        self.h_strip = nn.Conv2d(
+            channels, channels, (1, strip_size), padding=(0, strip_size // 2), groups=channels, bias=False
+        )
+        self.v_strip = nn.Conv2d(
+            channels, channels, (strip_size, 1), padding=(strip_size // 2, 0), groups=channels, bias=False
+        )
+        self.spatial_bn = nn.BatchNorm2d(channels)
+        self.act = nn.SiLU(inplace=True)
+        self.gate_conv = nn.Conv2d(channels, channels, 1)
+        self.proj = _ConvBNAct(channels, channels, 1, act=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Enhance strip-like structures with channel context and directional gates."""
+        identity = x
+        channel_context = self.channel_context(x)
+        spatial = self.large_dw(x)
+        spatial = spatial + self.h_strip(spatial) + self.v_strip(spatial)
+        spatial = self.act(self.spatial_bn(spatial))
+        gate = self.gate_conv(spatial).sigmoid()
+        return self.proj(channel_context * gate) + identity
+
+
+class RSE3(nn.Module):
+    """River-structure strip enhancement for three-level YOLO segmentation features."""
+
+    def __init__(
+        self,
+        in_channels: Union[int, Sequence[int]],
+        out_channels: int = 256,
+        large_size: int = 5,
+        strip_size: int = 9,
+        mode: str = "p3p4",
+    ):
+        super().__init__()
+        if isinstance(in_channels, int):
+            in_channels = [in_channels] * 3
+        elif len(in_channels) == 1 and isinstance(in_channels[0], (list, tuple)):
+            in_channels = list(in_channels[0])
+        else:
+            in_channels = list(in_channels)
+        if len(in_channels) != 3:
+            raise ValueError("RSE3 expects three input feature levels: [P3, P4, P5].")
+        if mode not in {"p3", "p3p4", "all"}:
+            raise ValueError("mode must be one of {'p3', 'p3p4', 'all'}.")
+
+        enhance_indices = {"p3": {0}, "p3p4": {0, 1}, "all": {0, 1, 2}}[mode]
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.mode = mode
+        self.input_projs = nn.ModuleList(
+            nn.Identity() if c == out_channels else _ConvBNAct(c, out_channels, 1) for c in in_channels
+        )
+        self.blocks = nn.ModuleList(
+            RiverDCPBlock(out_channels, large_size, strip_size) if i in enhance_indices else nn.Identity()
+            for i in range(3)
+        )
+
+    def forward(self, x: Union[List[torch.Tensor], tuple]) -> List[torch.Tensor]:
+        """Forward [P3, P4, P5] and return strip-enhanced [P3_out, P4_out, P5_out]."""
+        if not isinstance(x, (list, tuple)) or len(x) != 3:
+            raise ValueError("RSE3.forward expects a list or tuple with three tensors: [P3, P4, P5].")
+
+        return [block(proj(feat)) for block, proj, feat in zip(self.blocks, self.input_projs, x)]
 
 
 class FeatureSelect(nn.Module):

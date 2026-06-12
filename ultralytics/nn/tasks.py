@@ -62,6 +62,7 @@ from ultralytics.nn.modules import (
     RepVGGDW,
     ResNetLayer,
     RTDETRDecoder,
+    RSE3,
     SCDown,
     SGFPN3,
     Segment,
@@ -1720,9 +1721,13 @@ def parse_model(d, ch, verbose=True):
             if not isinstance(f, list):
                 raise TypeError("SGFPN3 expects a list of input layers, e.g. [16, 19, 22].")
             c1 = [ch[x] for x in f]
-            c2 = make_divisible(min(args[0], max_channels) * width, 8)
+            c2 = make_divisible(min(args[0] if args else 256, max_channels) * width, 8)
             args = [c1, c2, *args[1:]]
             c2 = [c2] * len(c1)
+        elif m is RSE3:
+            c1 = ch[f] if isinstance(f, int) else [ch[x] for x in f]
+            c2 = make_divisible(min(args[0] if args else 256, max_channels) * width, 8)
+            args = [c1, c2, *args[1:]]
         elif m is FeatureSelect:
             index = args[0] if args else 0
             c1 = ch[f]
