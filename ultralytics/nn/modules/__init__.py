@@ -94,6 +94,7 @@ from .river_neck import (
     FeatureSelect,
     MSFFM_YOLO,
     RSE3,
+    RSEAttentionBlock,
     RiverDCPBlock,
     SGFPN3,
     SemanticGuideFusion,
@@ -194,5 +195,6 @@ __all__ = (
     "SemanticGuideFusion",
     "ChannelContextAggregationYOLO",
     "RiverDCPBlock",
+    "RSEAttentionBlock",
     "RSE3",
 )

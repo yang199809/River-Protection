@@ -1726,8 +1726,13 @@ def parse_model(d, ch, verbose=True):
             c2 = [c2] * len(c1)
         elif m is RSE3:
             c1 = ch[f] if isinstance(f, int) else [ch[x] for x in f]
-            c2 = make_divisible(min(args[0] if args else 256, max_channels) * width, 8)
-            args = [c1, c2, *args[1:]]
+            out_channels = args[0] if args else 256
+            large_size = args[1] if len(args) > 1 else 5
+            strip_size = args[2] if len(args) > 2 else 9
+            mode = args[3] if len(args) > 3 else "p4"
+            block_type = args[4] if len(args) > 4 else "attn"
+            c2 = make_divisible(min(out_channels, max_channels) * width, 8)
+            args = [c1, c2, large_size, strip_size, mode, block_type]
         elif m is FeatureSelect:
             index = args[0] if args else 0
             c1 = ch[f]

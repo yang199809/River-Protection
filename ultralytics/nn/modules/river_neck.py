@@ -16,6 +16,7 @@ __all__ = (
     "FeatureSelect",
     "ChannelContextAggregationYOLO",
     "RiverDCPBlock",
+    "RSEAttentionBlock",
     "RSE3",
 )
 
@@ -203,6 +204,7 @@ class RiverDCPBlock(nn.Module):
         self.act = nn.SiLU(inplace=True)
         self.gate_conv = nn.Conv2d(channels, channels, 1)
         self.proj = _ConvBNAct(channels, channels, 1, act=False)
+        self.gamma = nn.Parameter(torch.zeros(1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Enhance strip-like structures with channel context and directional gates."""
@@ -212,7 +214,37 @@ class RiverDCPBlock(nn.Module):
         spatial = spatial + self.h_strip(spatial) + self.v_strip(spatial)
         spatial = self.act(self.spatial_bn(spatial))
         gate = self.gate_conv(spatial).sigmoid()
-        return self.proj(channel_context * gate) + identity
+        out = self.proj(channel_context * gate)
+        return identity + self.gamma * out
+
+
+class RSEAttentionBlock(nn.Module):
+    """Attention-only strip enhancement block initialized as identity."""
+
+    def __init__(self, channels: int, large_size: int = 5, strip_size: int = 9):
+        super().__init__()
+        if large_size % 2 == 0 or strip_size % 2 == 0:
+            raise ValueError("large_size and strip_size must be odd for same-size depthwise convolution.")
+
+        self.local_dw = nn.Conv2d(channels, channels, large_size, padding=large_size // 2, groups=channels, bias=False)
+        self.h_strip = nn.Conv2d(
+            channels, channels, (1, strip_size), padding=(0, strip_size // 2), groups=channels, bias=False
+        )
+        self.v_strip = nn.Conv2d(
+            channels, channels, (strip_size, 1), padding=(strip_size // 2, 0), groups=channels, bias=False
+        )
+        self.bn = nn.BatchNorm2d(channels)
+        self.act = nn.SiLU(inplace=True)
+        self.att_conv = nn.Conv2d(channels, channels, 1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Reweight the input response with strip-structure attention."""
+        s = self.local_dw(x)
+        s = s + self.h_strip(s) + self.v_strip(s)
+        s = self.act(self.bn(s))
+        att = self.att_conv(s).sigmoid()
+        return x * (1.0 + self.gamma * att)
 
 
 class RSE3(nn.Module):
@@ -224,7 +256,8 @@ class RSE3(nn.Module):
         out_channels: int = 256,
         large_size: int = 5,
         strip_size: int = 9,
-        mode: str = "p3p4",
+        mode: str = "p4",
+        block_type: str = "attn",
     ):
         super().__init__()
         if isinstance(in_channels, int):
@@ -235,19 +268,29 @@ class RSE3(nn.Module):
             in_channels = list(in_channels)
         if len(in_channels) != 3:
             raise ValueError("RSE3 expects three input feature levels: [P3, P4, P5].")
-        if mode not in {"p3", "p3p4", "all"}:
-            raise ValueError("mode must be one of {'p3', 'p3p4', 'all'}.")
+        if mode not in {"p3", "p4", "p5", "p3p4", "all", "none"}:
+            raise ValueError("mode must be one of {'p3', 'p4', 'p5', 'p3p4', 'all', 'none'}.")
+        if block_type not in {"dcp", "attn"}:
+            raise ValueError("block_type must be one of {'dcp', 'attn'}.")
 
-        enhance_indices = {"p3": {0}, "p3p4": {0, 1}, "all": {0, 1, 2}}[mode]
+        enhance_indices = {
+            "p3": {0},
+            "p4": {1},
+            "p5": {2},
+            "p3p4": {0, 1},
+            "all": {0, 1, 2},
+            "none": set(),
+        }[mode]
+        block_cls = RiverDCPBlock if block_type == "dcp" else RSEAttentionBlock
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.mode = mode
+        self.block_type = block_type
         self.input_projs = nn.ModuleList(
             nn.Identity() if c == out_channels else _ConvBNAct(c, out_channels, 1) for c in in_channels
         )
         self.blocks = nn.ModuleList(
-            RiverDCPBlock(out_channels, large_size, strip_size) if i in enhance_indices else nn.Identity()
-            for i in range(3)
+            block_cls(out_channels, large_size, strip_size) if i in enhance_indices else nn.Identity() for i in range(3)
         )
 
     def forward(self, x: Union[List[torch.Tensor], tuple]) -> List[torch.Tensor]:
